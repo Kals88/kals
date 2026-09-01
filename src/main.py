@@ -94,7 +94,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     print(f"[build] 원자료 {len(frame)}행")
 
     qframe = quarterly.build_quarterly(frame, fs_div=args.fs_div)
-    lines = fdd_metrics.extract_lines(qframe)
+    lines, mapping = fdd_metrics.extract_lines(qframe, trace=True)
     metrics = fdd_metrics.build_metrics(lines)
     recon = quarterly.reconciliation(frame, fs_div=args.fs_div)
 
@@ -114,6 +114,8 @@ def cmd_build(args: argparse.Namespace) -> int:
             metrics.to_excel(writer, sheet_name="FDD지표")
         if not recon.empty:
             recon.to_excel(writer, sheet_name="차분대사", index=False)
+        if not mapping.empty:
+            mapping.to_excel(writer, sheet_name="계정매핑", index=False)
 
     print(f"[build] 엑셀 저장: {excel_path}")
 
@@ -126,6 +128,14 @@ def cmd_build(args: argparse.Namespace) -> int:
             f"[build] 경고: 차분값과 보고서 표기 3개월 수치가 어긋난 계정 {len(recon)}건. "
             "소급재작성/연결범위 변동 가능성을 확인하세요."
         )
+
+    print()
+    print("=" * 72)
+    print("아래 표를 그대로 복사해 전달하면 분석·해석을 이어서 진행할 수 있습니다.")
+    print("=" * 72)
+    print()
+    print(metrics.to_markdown() if not metrics.empty else "(지표 없음)")
+    print()
     return 0
 
 
@@ -163,6 +173,52 @@ def _write_markdown(
 
 
 # --------------------------------------------------------------------------- #
+# doctor
+# --------------------------------------------------------------------------- #
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """실행 전 환경 점검. 무엇이 막혔는지 먼저 알려준다."""
+    ok = True
+
+    key = __import__("os").environ.get("DART_API_KEY", "").strip()
+    if key:
+        print(f"[doctor] DART_API_KEY: 설정됨 (길이 {len(key)})")
+        if len(key) != 40:
+            print("[doctor]   주의: OpenDART 인증키는 보통 40자입니다. 값을 확인하세요.")
+    else:
+        ok = False
+        print("[doctor] DART_API_KEY: 없음")
+        print("[doctor]   https://opendart.fss.or.kr 에서 발급 후 아래처럼 지정하세요.")
+        print("[doctor]   export DART_API_KEY=발급받은키")
+
+    try:
+        import requests
+
+        resp = requests.get("https://opendart.fss.or.kr/", timeout=15)
+        print(f"[doctor] opendart.fss.or.kr 연결: OK (HTTP {resp.status_code})")
+    except Exception as exc:  # noqa: BLE001 - 진단 목적이라 폭넓게 잡는다
+        ok = False
+        print(f"[doctor] opendart.fss.or.kr 연결: 실패 - {exc}")
+        print("[doctor]   방화벽/프록시가 DART 도메인을 차단하고 있는지 확인하세요.")
+
+    if key and ok:
+        try:
+            client = DartClient(cache_dir=RAW_DIR)
+            corp_code = client.find_corp_code(stock_code=args.stock_code)
+            profile = client.company(corp_code)
+            print(
+                f"[doctor] API 인증 및 조회: OK - "
+                f"{profile.get('corp_name')} (corp_code={corp_code})"
+            )
+        except DartError as exc:
+            ok = False
+            print(f"[doctor] API 조회 실패: {exc}")
+
+    print()
+    print("[doctor] 결과:", "정상 - fetch 를 실행하세요." if ok else "문제 있음 (위 항목 확인)")
+    return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------- #
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="finger-fdd", description="핑거(163730) FDD 재무데이터 파이프라인"
@@ -181,6 +237,10 @@ def main(argv: list[str] | None = None) -> int:
         choices=["CFS", "OFS"], help="CFS=연결, OFS=별도",
     )
     fetch.set_defaults(func=cmd_fetch)
+
+    doctor = sub.add_parser("doctor", help="API 키 및 DART 연결 상태 점검")
+    doctor.add_argument("--stock-code", default=DEFAULT_STOCK_CODE)
+    doctor.set_defaults(func=cmd_doctor)
 
     build = sub.add_parser("build", help="분기 시계열 및 FDD 지표 산출")
     build.add_argument("--fs-div", default="CFS", choices=["CFS", "OFS"])

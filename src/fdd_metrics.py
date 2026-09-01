@@ -64,30 +64,112 @@ NAME_MAP = [
 ]
 
 
+# 여러 계정에 흩어져 나오는 항목은 첫 매칭만 쓰면 과소계상된다.
+# 예: 차입금은 유동/비유동으로 분리 표시되고, 사채도 유동성사채가 따로 잡힌다.
+# 순차입금은 매수가격에 직결되므로 이 라벨들은 매칭되는 계정을 전부 합산한다.
+ADDITIVE_LABELS = {
+    "단기차입금",
+    "장기차입금",
+    "유동성장기부채",
+    "사채",
+    "매출채권",
+    "매입채무",
+    "재고자산",
+    "현금및현금성자산",
+    "감가상각비",
+    "무형자산상각비",
+}
+
+# 소계·합계 성격이라 합산하면 이중계상되는 라벨. 표시순서상 첫 행을 대표로 쓴다.
+FIRST_MATCH_LABELS = {
+    "매출액",
+    "매출원가",
+    "매출총이익",
+    "판매비와관리비",
+    "영업이익",
+    "당기순이익",
+    "지배주주순이익",
+    "자산총계",
+    "유동자산",
+    "비유동자산",
+    "부채총계",
+    "유동부채",
+    "비유동부채",
+    "자본총계",
+    "지배주주지분",
+    "영업활동현금흐름",
+    "투자활동현금흐름",
+    "재무활동현금흐름",
+    "감가상각비및무형자산상각비",
+}
+
+
 def _normalize(name: str) -> str:
     return "".join(str(name).split())
 
 
-def extract_lines(quarterly: pd.DataFrame) -> pd.DataFrame:
-    """분기 재무제표에서 FDD 표준 라인만 뽑아 라벨링한다."""
+def label_for(account_key: str, account_nm: str) -> str | None:
+    """계정을 FDD 표준 라인 라벨에 매핑. IFRS 표준코드 우선, 계정명 폴백."""
+    label = IFRS_MAP.get(account_key)
+    if label is not None:
+        return label
+    normalized = _normalize(account_nm)
+    for candidate, keywords in NAME_MAP:
+        if any(_normalize(k) in normalized for k in keywords):
+            return candidate
+    return None
+
+
+def extract_lines(
+    quarterly: pd.DataFrame, trace: bool = False
+) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+    """분기 재무제표에서 FDD 표준 라인만 뽑아 라벨링한다.
+
+    trace=True 이면 (라인표, 매핑내역) 을 함께 반환한다. 매핑내역은 어떤 원계정이
+    어떤 라벨로 들어갔는지 보여주므로, 숫자가 이상할 때 가장 먼저 볼 자료다.
+    """
     quarter_cols = [c for c in quarterly.columns if _is_quarter(c)]
     labeled: dict[str, pd.Series] = {}
+    taken: set[str] = set()
+    mapping: list[dict[str, object]] = []
 
     for (sj_div, account_key), row in quarterly.iterrows():
-        label = IFRS_MAP.get(account_key)
-        if label is None:
-            normalized = _normalize(row.get("account_nm", ""))
-            for candidate, keywords in NAME_MAP:
-                if any(_normalize(k) in normalized for k in keywords):
-                    label = candidate
-                    break
+        account_nm = row.get("account_nm", "")
+        label = label_for(account_key, account_nm)
         if label is None:
             continue
-        # 먼저 매칭된 계정을 우선(재무제표 표시순서상 상위 항목).
-        if label not in labeled:
-            labeled[label] = row[quarter_cols].astype("float64")
 
-    return pd.DataFrame(labeled).T if labeled else pd.DataFrame()
+        values = row[quarter_cols].astype("float64")
+
+        if label in ADDITIVE_LABELS:
+            action = "합산"
+            if label in labeled:
+                labeled[label] = labeled[label].add(values.fillna(0.0), fill_value=0.0)
+            else:
+                labeled[label] = values.fillna(0.0)
+        else:
+            # 소계 성격 라벨은 표시순서상 첫 계정만 채택한다.
+            if label in taken:
+                action = "무시(중복)"
+            else:
+                labeled[label] = values
+                taken.add(label)
+                action = "채택"
+
+        mapping.append(
+            {
+                "라벨": label,
+                "구분": sj_div,
+                "원계정명": account_nm,
+                "account_id": account_key,
+                "처리": action,
+            }
+        )
+
+    lines = pd.DataFrame(labeled).T if labeled else pd.DataFrame()
+    if trace:
+        return lines, pd.DataFrame(mapping)
+    return lines
 
 
 def _is_quarter(col: object) -> bool:

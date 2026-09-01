@@ -22,8 +22,15 @@ Q4 단독 = 사업보고서 연간   - 3분기 누적
 ## 사용법
 
 ```bash
+git clone https://github.com/Kals88/kals.git
+cd kals
+git checkout claude/finger-fdd-report-1a4mv7
 pip install -r requirements.txt
+
 export DART_API_KEY=<https://opendart.fss.or.kr 에서 발급>
+
+# 0) 환경 점검 - 키와 DART 연결을 먼저 확인한다
+python -m src.main doctor
 
 # 1) 원자료 수집 (연결 + 별도, 3개년 × 4개 보고서)
 python -m src.main fetch --stock-code 163730 --years 2023 2024 2025
@@ -33,11 +40,14 @@ python -m src.main build --fs-div CFS   # 연결
 python -m src.main build --fs-div OFS   # 별도
 ```
 
+`build` 는 마지막에 지표표를 마크다운으로 터미널에 출력한다.
+그 블록을 그대로 복사해 전달하면 해석·분석을 이어서 진행할 수 있다.
+
 ## 산출물
 
 | 경로 | 내용 |
 |---|---|
-| `outputs/핑거_분기재무제표_CFS.xlsx` | 재무상태표·손익계산서·현금흐름표 분기 시계열, FDD 표준라인, 지표 요약, 차분대사 |
+| `outputs/핑거_분기재무제표_CFS.xlsx` | 6개 시트: 재무상태표 / 손익계산서 / 현금흐름표 (분기 시계열), FDD표준라인, FDD지표, 차분대사, 계정매핑 |
 | `outputs/재무분석표.md` | 보고서 삽입용 마크다운 표 |
 | `data/raw/` | DART API 원본 응답 (재수집 없이 재분석 가능) |
 
@@ -72,5 +82,10 @@ DART 응답 형태를 모사한 합성 데이터로 flow 항목 차분, stock �
 - `fnlttSinglAcntAll` API 는 2015년 이후 정기보고서만 제공한다.
 - 회사가 표준계정코드(`account_id`)를 부여하지 않은 계정은 계정명 키워드로
   매칭한다. 매칭 규칙은 `src/fdd_metrics.py` 의 `NAME_MAP` 에서 조정한다.
+  **어떤 원계정이 어떤 라벨로 들어갔는지는 `계정매핑` 시트에서 확인할 것.**
+  숫자가 이상하면 여기부터 본다.
+- 차입금·사채·매출채권처럼 여러 계정에 흩어지는 항목은 매칭되는 계정을
+  전부 합산하고(`ADDITIVE_LABELS`), 매출액·영업이익 등 소계 성격 항목은
+  이중계상을 막기 위해 첫 매칭만 채택한다(`FIRST_MATCH_LABELS`).
 - 소급 재작성이 있는 경우 연도 간 비교 시 기준이 달라질 수 있다.
   `차분대사` 시트를 먼저 확인할 것.

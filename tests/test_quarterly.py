@@ -121,8 +121,58 @@ def test_metrics_pipeline():
     print("PASS: 지표 산출 (매출/부채비율/계정명 매칭)")
 
 
+
+
+def test_debt_lines_are_summed_not_first_match():
+    """차입금·사채는 유동/비유동으로 흩어져 나온다. 전부 합산해야 순차입금이 맞다."""
+    rows, _, _ = build_fixture()
+    for period in quarterly.PERIOD_ORDER:
+        rows.append(_row(2024, period, "BS", "-none1-", "단기차입금", None, 100, 10))
+        rows.append(_row(2024, period, "BS", "-none2-", "유동성장기부채", None, 50, 11))
+        rows.append(_row(2024, period, "BS", "-none3-", "장기차입금", None, 300, 12))
+        rows.append(_row(2024, period, "BS", "-none4-", "전환사채", None, 200, 13))
+        rows.append(
+            _row(2024, period, "BS", "ifrs-full_CashAndCashEquivalents",
+                 "현금및현금성자산", None, 150, 14)
+        )
+
+    frame = quarterly.to_dataframe(rows)
+    result = quarterly.build_quarterly(frame, fs_div="CFS")
+    lines, mapping = fdd_metrics.extract_lines(result, trace=True)
+    metrics = fdd_metrics.build_metrics(lines, unit=1.0)
+
+    # 총차입금 = 100 + 50 + 300 + 200 = 650
+    assert metrics.loc["총차입금", "2024Q1"] == 650, metrics.loc["총차입금"]
+    # 순차입금 = 650 - 150 = 500
+    assert metrics.loc["순차입금", "2024Q1"] == 500, metrics.loc["순차입금"]
+    assert (mapping["처리"] == "합산").any(), "합산 처리 내역이 기록되어야 합니다"
+    print("PASS: 차입금 합산 (총차입금 650 / 순차입금 500)")
+
+
+def test_subtotal_lines_are_not_double_counted():
+    """소계 성격 라벨은 중복 매칭돼도 합산하면 안 된다."""
+    rows, standalone, _ = build_fixture()
+    # 주석 분해 등으로 '매출액'이 한 번 더 등장하는 상황
+    for period in quarterly.PERIOD_ORDER:
+        rows.append(
+            _row(2024, period, "IS", "-dup-", "매출액(제품)", None,
+                 {"Q1": 100, "H1": 250, "Q3": 420, "FY": 600}[period], 99)
+        )
+
+    frame = quarterly.to_dataframe(rows)
+    result = quarterly.build_quarterly(frame, fs_div="CFS")
+    lines = fdd_metrics.extract_lines(result)
+
+    assert lines.loc["매출액", "2024Q2"] == standalone["H1"], (
+        f"매출액이 이중계상되었습니다: {lines.loc['매출액', '2024Q2']}"
+    )
+    print("PASS: 소계 라벨 이중계상 방지")
+
+
 if __name__ == "__main__":
     test_flow_is_differenced_and_stock_is_not()
     test_reconciliation_flags_mismatch()
     test_metrics_pipeline()
+    test_debt_lines_are_summed_not_first_match()
+    test_subtotal_lines_are_not_double_counted()
     print("\n전체 통과")
